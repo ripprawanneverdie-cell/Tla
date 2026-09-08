@@ -1,0 +1,321 @@
+-- Schrodinger Hub - Mobile Optimized & Crash-Proofed
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local HttpService = game:GetService("HttpService")
+local TweenService = game:GetService("TweenService")
+local ContentProvider = game:GetService("ContentProvider")
+local VirtualUser = game:GetService("VirtualUser")
+local UserInputService = game:GetService("UserInputService")
+
+-- Protection Script Bootstrapper
+pcall(function()
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/Pixeluted/adoniscries/main/Source.lua"))()
+end)
+
+-- Safe GUI Parent Detection
+local function getSafeParent()
+    local success, _ = pcall(function() return game:GetService("CoreGui") end)
+    if success and game:GetService("CoreGui") then
+        return game:GetService("CoreGui")
+    end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- UI Library Loading
+local Library = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/addons/SaveManager.lua"))()
+
+local Window = Library:CreateWindow({
+    Title = "Schrodinger Hub (Mobile)",
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2
+})
+
+local Tabs = {
+    QOL = Window:AddTab("Quality of life"),
+    ["Autofarm Settings"] = Window:AddTab("Autofarm Settings"),
+    ["UI Settings"] = Window:AddTab("UI Settings")
+}
+
+-- Global State Flags
+getgenv().autoFarmEnabled = false
+getgenv().autoSummonEnabled = false
+getgenv().autoMobFarm = false
+getgenv().autoMobFarmAll = false
+getgenv().autoMovesEnabled = false
+getgenv().autoAttackEnabled = false
+getgenv().lowPerfMode = false
+getgenv().antiAfkEnabled = false
+
+-- Anti-AFK Setup
+LocalPlayer.Idled:Connect(function()
+    if getgenv().antiAfkEnabled then
+        pcall(function()
+            VirtualUser:Button2Down(Vector2.zero)
+            task.wait(0.1)
+            VirtualUser:Button2Up(Vector2.zero)
+        end)
+    end
+end)
+
+-- Mobile Touch-Friendly Toggle Button
+local mobileGui = Instance.new("ScreenGui")
+mobileGui.Name = "Schrodinger_MobileUI"
+mobileGui.ResetOnSpawn = false
+mobileGui.Parent = getSafeParent()
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0, 55, 0, 55)
+toggleBtn.Position = UDim2.new(0, 15, 0.3, 0)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+toggleBtn.TextColor3 = Color3.fromRGB(0, 255, 150)
+toggleBtn.Text = "HUB"
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 14
+toggleBtn.Active = true
+toggleBtn.Parent = mobileGui
+
+local btnCorner = Instance.new("UICorner")
+btnCorner.CornerRadius = UDim.new(0, 12)
+btnCorner.Parent = toggleBtn
+
+local btnStroke = Instance.new("UIStroke")
+btnStroke.Color = Color3.fromRGB(0, 255, 150)
+btnStroke.Thickness = 2
+btnStroke.Parent = toggleBtn
+
+-- Custom Smooth Touch Drag Logic
+local dragging, dragInput, dragStart, startPos
+toggleBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = toggleBtn.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+toggleBtn.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        toggleBtn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+toggleBtn.MouseButton1Click:Connect(function()
+    Library:Toggle()
+end)
+
+-- UI Setup Controls
+local SettingsGroup = Tabs["Autofarm Settings"]:AddLeftGroupbox("Distance & Prediction")
+SettingsGroup:AddSlider("MobFarmDistance", {Text = "Mob Distance", Default = 8.5, Min = 0, Max = 30, Rounding = 1})
+SettingsGroup:AddSlider("PlayerFarmDistance", {Text = "Player Distance", Default = 8.5, Min = 0, Max = 30, Rounding = 1})
+SettingsGroup:AddSlider("PlayerPrediction", {Text = "Prediction Value", Default = 0.1, Min = 0, Max = 2, Rounding = 2})
+
+local MovesGroup = Tabs["Autofarm Settings"]:AddRightGroupbox("Auto Moves Setup")
+MovesGroup:AddDropdown("SelectedMoves", {
+    Values = {"E", "R", "T", "Y", "G", "H", "J", "Z", "X", "V", "B"},
+    Default = 1,
+    Multi = true,
+    Text = "Select Moves"
+})
+
+-- Core Gameplay Utility Functions
+local function isStandSummoned()
+    local usersFolder = workspace:FindFirstChild("Users")
+    if not usersFolder then return false end
+    
+    local myPlayerNode = usersFolder:FindFirstChild(LocalPlayer.Name)
+    local myStand = myPlayerNode and myPlayerNode:FindFirstChild("Stand")
+    if not myStand then return false end
+    
+    local parts = 0
+    for _, part in ipairs(myStand:GetDescendants()) do
+        if part:IsA("BasePart") and part.Transparency < 1 then
+            parts = parts + 1
+            if parts > 3 then return true end
+        end
+    end
+    return false
+end
+
+local function fireInputRemote(args)
+    local remote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Input")
+    if remote then
+        pcall(function() remote:FireServer(unpack(args)) end)
+    end
+end
+
+-- Dedicated Autofarm Loop (30 FPS Cap to Prevent Mobile Overheating)
+local mobPriorityList = {}
+local activeTargetInstance = nil
+
+local function getValidMobs()
+    local mobs = {}
+    local users = workspace:FindFirstChild("Users")
+    if users then
+        for _, v in pairs(users:GetChildren()) do
+            if v:FindFirstChild("AI") and not table.find(mobs, v.Name) then
+                table.insert(mobs, v.Name)
+            end
+        end
+    end
+    if #mobs == 0 then table.insert(mobs, "None") end
+    return mobs
+end
+
+local function getTargetMob()
+    if activeTargetInstance and activeTargetInstance.Parent then
+        local hum = activeTargetInstance:FindFirstChild("Humanoid")
+        if hum and hum.Health > 0 then return activeTargetInstance end
+    end
+    
+    activeTargetInstance = nil
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    
+    local closest, minDist = nil, math.huge
+    local users = workspace:FindFirstChild("Users")
+    if users then
+        for _, v in pairs(users:GetChildren()) do
+            if v:FindFirstChild("AI") then
+                local targetHrp = v:FindFirstChild("HumanoidRootPart") or v.PrimaryPart
+                local hum = v:FindFirstChild("Humanoid")
+                if targetHrp and hum and hum.Health > 0 then
+                    local dist = (hrp.Position - targetHrp.Position).Magnitude
+                    if dist < minDist then
+                        minDist = dist
+                        closest = v
+                    end
+                end
+            end
+        end
+    end
+    activeTargetInstance = closest
+    return closest
+end
+
+-- Mobile Optimized Main Loop
+task.spawn(function()
+    local lastTick = os.clock()
+    while true do
+        task.wait(0.033) -- ~30 FPS loop to preserve battery and prevent crash
+        
+        if getgenv().autoMobFarm or getgenv().autoMobFarmAll then
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            
+            if hrp then
+                local target = getTargetMob()
+                if target then
+                    local targetHrp = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+                    if targetHrp then
+                        local dist = Options.MobFarmDistance.Value
+                        local hoverPos = targetHrp.Position + Vector3.new(0, dist, 0)
+                        hrp.CFrame = CFrame.new(hoverPos) * CFrame.Angles(math.rad(-90), 0, 0)
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                    end
+                end
+            end
+        end
+        
+        -- Auto Actions
+        if getgenv().autoSummonEnabled and not isStandSummoned() then
+            fireInputRemote({Enum.KeyCode.Q, true})
+        end
+        
+        if getgenv().autoAttackEnabled and isStandSummoned() then
+            fireInputRemote({Enum.UserInputType.MouseButton1, true})
+        end
+        
+        if getgenv().autoMovesEnabled and isStandSummoned() and Options.SelectedMoves.Value then
+            for key, isSelected in pairs(Options.SelectedMoves.Value) do
+                if isSelected then
+                    pcall(function() fireInputRemote({Enum.KeyCode[key], true}) end)
+                end
+            end
+        end
+    end
+end)
+
+-- UI Toggles
+local MobGroup = Tabs.QOL:AddRightGroupbox("Mob Farming")
+
+MobGroup:AddToggle("AutoMobFarm", {
+    Text = "Auto Mob Farm",
+    Default = false,
+    Callback = function(v) getgenv().autoMobFarm = v end
+})
+
+MobGroup:AddDropdown("SelectedMobs", {
+    Values = getValidMobs(),
+    Default = 0,
+    Multi = true,
+    Text = "Mob Select"
+})
+
+MobGroup:AddButton("Refresh Mobs", function()
+    Options.SelectedMobs:SetValues(getValidMobs())
+end)
+
+MobGroup:AddToggle("AutoSummonStand", {
+    Text = "Auto Summon",
+    Default = false,
+    Callback = function(v) getgenv().autoSummonEnabled = v end
+})
+
+MobGroup:AddToggle("AutoAttackToggle", {
+    Text = "Auto Attack",
+    Default = false,
+    Callback = function(v) getgenv().autoAttackEnabled = v end
+})
+
+MobGroup:AddToggle("AutoMovesToggle", {
+    Text = "Auto Moves",
+    Default = false,
+    Callback = function(v) getgenv().autoMovesEnabled = v end
+})
+
+MobGroup:AddToggle("AntiAfkToggle", {
+    Text = "Anti AFK",
+    Default = false,
+    Callback = function(v) getgenv().antiAfkEnabled = v end
+})
+
+-- UI Clean Up Routine
+Library:OnUnload(function()
+    getgenv().autoMobFarm = false
+    getgenv().autoSummonEnabled = false
+    getgenv().autoAttackEnabled = false
+    getgenv().autoMovesEnabled = false
+    getgenv().antiAfkEnabled = false
+    if mobileGui then mobileGui:Destroy() end
+end)
+
+local MenuGroup = Tabs["UI Settings"]:AddLeftGroupbox("Menu")
+MenuGroup:AddButton("Unload Hub", function() Library:Unload() end)
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetFolder("SchrodingerHub")
+SaveManager:BuildConfigSection(Tabs["UI Settings"])
+ThemeManager:ApplyToTab(Tabs["UI Settings"])
